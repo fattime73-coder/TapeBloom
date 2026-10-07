@@ -1,0 +1,6 @@
+/build/
+/build-core/
+/package/
+*.zip
+.DS_Store
+*.tapebloom

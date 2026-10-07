@@ -1,0 +1,49 @@
+name: Build TapeBloom
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DTAPEBLOOM_CORE_ONLY=ON
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/build-mac.sh
+      - name: Validate Audio Unit
+        run: |
+          mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
+          ditto build/TapeBloom_artefacts/Release/AU/TapeBloom.component "$HOME/Library/Audio/Plug-Ins/Components/TapeBloom.component"
+          codesign --force --deep --sign - "$HOME/Library/Audio/Plug-Ins/Components/TapeBloom.component"
+          auval -v aumf TpBl TbAu
+      - name: Package app and component
+        run: |
+          mkdir -p package
+          ditto build/TapeBloom_artefacts/Release/Standalone/TapeBloom.app package/TapeBloom.app
+          ditto build/TapeBloom_artefacts/Release/AU/TapeBloom.component package/TapeBloom.component
+          cp README.md THIRD_PARTY.md LICENSE package/
+          mkdir -p package/licenses
+          cp build/_deps/juce-src/LICENSE.md package/licenses/JUCE-LICENSE.md
+          python3 - <<'PYLICENSE'
+          import pathlib, shutil
+          root = pathlib.Path('build/_deps/juce-src/modules')
+          dest = pathlib.Path('package/licenses/JUCE-modules')
+          for src in root.rglob('*'):
+              if src.is_file() and any(word in src.name.lower() for word in ('license', 'licence', 'copying', 'copyright')):
+                  target = dest / src.relative_to(root)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(src, target)
+          PYLICENSE
+          ditto -c -k --keepParent package TapeBloom-macOS-unsigned.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TapeBloom-macOS-unsigned
+          path: TapeBloom-macOS-unsigned.zip
