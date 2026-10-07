@@ -20,10 +20,37 @@ jobs:
       - run: bash scripts/build-mac.sh
       - name: Validate Audio Unit
         run: |
+          set -euo pipefail
+          component="build/TapeBloom_artefacts/Release/AU/TapeBloom.component"
+          /usr/libexec/PlistBuddy -c 'Print :AudioComponents' "$component/Contents/Info.plist"
+          au_type=$(/usr/libexec/PlistBuddy -c 'Print :AudioComponents:0:type' "$component/Contents/Info.plist")
+          au_subtype=$(/usr/libexec/PlistBuddy -c 'Print :AudioComponents:0:subtype' "$component/Contents/Info.plist")
+          au_manufacturer=$(/usr/libexec/PlistBuddy -c 'Print :AudioComponents:0:manufacturer' "$component/Contents/Info.plist")
+          test "$au_type" = aumf
+          test "$au_subtype" = TpBl
+          test "$au_manufacturer" = TbAu
+          codesign --force --deep --sign - "$component"
+          codesign --verify --deep --strict "$component"
           mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
-          ditto build/TapeBloom_artefacts/Release/AU/TapeBloom.component "$HOME/Library/Audio/Plug-Ins/Components/TapeBloom.component"
-          codesign --force --deep --sign - "$HOME/Library/Audio/Plug-Ins/Components/TapeBloom.component"
-          auval -v aumf TpBl TbAu
+          ditto "$component" "$HOME/Library/Audio/Plug-Ins/Components/TapeBloom.component"
+          # A new CI runner may have cached its AU inventory before installation.
+          # Restart only this runner user's registrar, then wait for discovery.
+          killall -u "$(id -un)" AudioComponentRegistrar 2>/dev/null || true
+          discovered=false
+          for attempt in 1 2 3 4 5; do
+            auval -a > au-inventory.txt 2>&1
+            if grep -E 'aumf[[:space:]]+TpBl[[:space:]]+TbAu' au-inventory.txt; then
+              discovered=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$discovered" != true ]]; then
+            cat au-inventory.txt
+            echo 'TapeBloom was not registered; refusing to package an unvalidated AU.'
+            exit 1
+          fi
+          auval -v "$au_type" "$au_subtype" "$au_manufacturer" 2>&1 | tee au-validation.txt
       - name: Package app and component
         run: |
           mkdir -p package
@@ -43,6 +70,14 @@ jobs:
                   shutil.copy2(src, target)
           PYLICENSE
           ditto -c -k --keepParent package TapeBloom-macOS-unsigned.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: TapeBloom-AU-validation
+          path: |
+            au-inventory.txt
+            au-validation.txt
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: TapeBloom-macOS-unsigned
